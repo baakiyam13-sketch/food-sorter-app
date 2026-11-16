@@ -360,8 +360,9 @@ function SettingsScreen(props: {
         />
       </label>
       <p className="note">
-        Android often can't find food-sorter.local. Type the IP shown on the board's serial
-        monitor.
+        Android often can't find food-sorter.local. Type the board's IP. You can find it in
+        your phone's hotspot settings under connected devices, or count the green LED blinks
+        for the last number.
       </p>
       <label className="field">
         <span>Healthy threshold (0–10)</span>

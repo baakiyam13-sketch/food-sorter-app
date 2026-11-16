@@ -116,12 +116,17 @@ describe('score function handler', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects an image that is not a JPEG', async () => {
+  it('rejects an image that is not valid base64 with a 400, never a 500', async () => {
+    const res = await handler(post({ image: '!!!this is not base64!!!' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'That does not look like a JPEG image' });
+  });
+
+  it('rejects non-JPEG bytes with a 400, never a 500', async () => {
     const notJpeg = Buffer.from('this is plain text, not a photo').toString('base64');
     const res = await handler(post({ image: notJpeg }));
     expect(res.status).toBe(400);
-    const body = await res.json();
-    expect(body.error).toContain('JPEG');
+    expect(await res.json()).toEqual({ error: 'That does not look like a JPEG image' });
   });
 
   it('rejects a request with no image', async () => {

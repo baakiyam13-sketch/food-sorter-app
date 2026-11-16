@@ -95,8 +95,14 @@ export default async (req: Request): Promise<Response> => {
   if (typeof image !== 'string' || image.length === 0) {
     return json({ error: 'The request must carry a base64 JPEG image' }, 400);
   }
-  // A JPEG always starts with the bytes FF D8.
-  const head = atob(image.slice(0, 8));
+  // A JPEG always starts with the bytes FF D8. Invalid base64 throws, so
+  // catch it and answer 400 — bad input is never a 500.
+  let head: string;
+  try {
+    head = atob(image.slice(0, 8));
+  } catch {
+    return json({ error: 'That does not look like a JPEG image' }, 400);
+  }
   if (head.length < 2 || head.charCodeAt(0) !== 0xff || head.charCodeAt(1) !== 0xd8) {
     return json({ error: 'That does not look like a JPEG image' }, 400);
   }
