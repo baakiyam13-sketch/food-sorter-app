@@ -1,0 +1,12 @@
+{
+  "name": "Food Sorter",
+  "short_name": "Food Sorter",
+  "description": "Take a photo of food, get a health score, and sort it into the healthy or junk bin.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2e7d32",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
