@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HttpBoard, PretendBoard, sendWithRetry } from '../src/board';
+import { PretendBoard, sendWithRetry } from '../src/board';
 
 // A short busy time keeps these tests fast; the app uses the real 2 seconds.
 const BUSY_MS = 120;
@@ -143,14 +143,5 @@ describe('sendWithRetry', () => {
     const reply = await sendWithRetry(stuck, { waitMs: 50, timeoutMs: 300 });
     expect(reply.status).toBe(409);
     expect(Date.now() - start).toBeLessThan(1000);
-  });
-});
-
-describe('HttpBoard', () => {
-  it('is a Phase 2 stub that never makes network calls', async () => {
-    const board = new HttpBoard('192.168.43.50');
-    await expect(board.status()).rejects.toThrow('Coming in Phase 2');
-    await expect(board.sort('healthy', 7)).rejects.toThrow('Coming in Phase 2');
-    await expect(board.center()).rejects.toThrow('Coming in Phase 2');
   });
 });

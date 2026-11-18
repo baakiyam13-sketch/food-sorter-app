@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { scorePhoto, type ScoreResult } from './ai';
-import { PretendBoard, sendWithRetry, type BoardReply } from './board';
+import { PretendBoard, sendWithRetry, type BoardClient, type BoardReply } from './board';
+import { BleBoard, buildBleCommand } from './ble';
 import { buildSortCommand, cleanAddress, verdictForScore, type Side, type SortCommand } from './decide';
 import { dataUrlToBase64, fileToJpeg, makeThumb } from './photo';
 import {
@@ -12,6 +13,7 @@ import {
   type LogEntry,
   type Settings,
 } from './storage';
+import { bluetoothSupported, openWebBluetoothLink } from './webbluetooth';
 
 type View = 'scan' | 'result' | 'log' | 'settings';
 
@@ -20,6 +22,7 @@ interface ResultState {
   verdict: Side | null; // null when the photo had no food
   command: SortCommand | null;
   commandText: string | null;
+  boardError: string | null; // the board could not be reached (Bluetooth only)
 }
 
 function commandToText(command: SortCommand): string {
@@ -34,36 +37,50 @@ export default function App() {
   const [result, setResult] = useState<ResultState | null>(null);
   const [log, setLog] = useState<LogEntry[]>(loadLog);
 
-  // One pretend board for the whole app, rebuilt only if the address changes.
-  const boardRef = useRef<{ address: string; board: PretendBoard } | null>(null);
-  if (!boardRef.current || boardRef.current.address !== settings.boardAddress) {
-    boardRef.current = {
+  // One pretend board and one Bluetooth board for the whole app. The pretend
+  // board is rebuilt only if the address changes; the Bluetooth board keeps its
+  // connection for as long as the page is open.
+  const pretendRef = useRef<{ address: string; board: PretendBoard } | null>(null);
+  if (!pretendRef.current || pretendRef.current.address !== settings.boardAddress) {
+    pretendRef.current = {
       address: settings.boardAddress,
       board: new PretendBoard({ address: cleanAddress(settings.boardAddress) }),
     };
   }
-  const board = boardRef.current.board;
+  const bleRef = useRef<BleBoard | null>(null);
+  if (!bleRef.current) bleRef.current = new BleBoard(openWebBluetoothLink);
+  const ble = bleRef.current;
+  const real = settings.boardMode === 'real';
+  const board: BoardClient = real ? ble : pretendRef.current.board;
+
+  // Re-render when the Bluetooth connection comes or goes.
+  const [, setLinkVersion] = useState(0);
+  useEffect(() => ble.subscribe(() => setLinkVersion((v) => v + 1)), [ble]);
 
   const [boardReply, setBoardReply] = useState<BoardReply | null>(null);
   const [boardStatus, setBoardStatus] = useState<Record<string, unknown> | null>(null);
 
   const fileInput = useRef<HTMLInputElement>(null);
 
-  // Keep the pretend board's status fresh while it is on screen.
+  // Keep the board's status fresh while the result is on screen.
   useEffect(() => {
     if (view !== 'result' || !result?.command) return;
     let stopped = false;
     const tick = async () => {
-      const reply = await board.status();
-      if (!stopped) setBoardStatus(reply.body);
+      try {
+        const reply = await board.status();
+        if (!stopped) setBoardStatus(reply.body);
+      } catch {
+        // Bluetooth dropped or the board is quiet; the next tick tries again.
+      }
     };
     tick();
-    const timer = setInterval(tick, 300);
+    const timer = setInterval(tick, real ? 500 : 300);
     return () => {
       stopped = true;
       clearInterval(timer);
     };
-  }, [view, result, board]);
+  }, [view, result, board, real]);
 
   async function onPhotoPicked(file: File) {
     setBusy(true);
@@ -71,6 +88,8 @@ export default function App() {
     setBoardReply(null);
     setBoardStatus(null);
     try {
+      // Check the board before spending an AI call on a photo.
+      if (real) await ble.ensureConnected();
       const jpegDataUrl = await fileToJpeg(file, 768);
       const scored = await scorePhoto(dataUrlToBase64(jpegDataUrl));
       const thumb = await makeThumb(jpegDataUrl, 96);
@@ -78,18 +97,26 @@ export default function App() {
       let verdict: Side | null = null;
       let command: SortCommand | null = null;
       let commandText: string | null = null;
+      let boardError: string | null = null;
 
       if (scored.isFood) {
         // The app, not the AI, decides healthy or junk.
         verdict = verdictForScore(scored.score, settings.threshold);
         command = buildSortCommand(settings.boardAddress, verdict, scored.score);
-        commandText = commandToText(command);
-        // Send to the (pretend) board, retrying while it is busy.
-        const reply = await sendWithRetry(() => board.sort(verdict!, scored.score));
-        setBoardReply(reply);
+        commandText = real
+          ? `Bluetooth: ${buildBleCommand(verdict, scored.score)}`
+          : commandToText(command);
+        // Send to the board, retrying while it is busy. If the board cannot be
+        // reached the verdict is still shown and logged.
+        try {
+          const reply = await sendWithRetry(() => board.sort(verdict!, scored.score));
+          setBoardReply(reply);
+        } catch (err) {
+          boardError = (err as Error).message;
+        }
       }
 
-      setResult({ result: scored, verdict, command, commandText });
+      setResult({ result: scored, verdict, command, commandText, boardError });
       setLog(
         addLogEntry({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -114,8 +141,12 @@ export default function App() {
   // can be seen while the paddle is still moving.
   async function sendAgain() {
     if (!result?.command) return;
-    const reply = await board.sort(result.command.body.side, result.command.body.score);
-    setBoardReply(reply);
+    try {
+      const reply = await board.sort(result.command.body.side, result.command.body.score);
+      setBoardReply(reply);
+    } catch (err) {
+      setResult({ ...result, boardError: (err as Error).message });
+    }
   }
 
   function onSaveSettings(next: Settings) {
@@ -136,6 +167,7 @@ export default function App() {
           busy={busy}
           error={error}
           inputRef={fileInput}
+          needsBoard={real && !ble.connected}
           onPhotoPicked={onPhotoPicked}
           onShowLog={() => setView('log')}
           onShowSettings={() => setView('settings')}
@@ -146,6 +178,7 @@ export default function App() {
           result={result}
           boardReply={boardReply}
           boardStatus={boardStatus}
+          boardTitle={real ? 'Sorter board (Bluetooth)' : 'Pretend board'}
           onSendAgain={sendAgain}
           onScanAnother={() => setView('scan')}
         />
@@ -154,6 +187,7 @@ export default function App() {
       {view === 'settings' && (
         <SettingsScreen
           settings={settings}
+          ble={ble}
           onSave={onSaveSettings}
           onClearLog={onClearLog}
           onBack={() => setView('scan')}
@@ -167,6 +201,7 @@ function ScanScreen(props: {
   busy: boolean;
   error: string | null;
   inputRef: React.RefObject<HTMLInputElement | null>;
+  needsBoard: boolean;
   onPhotoPicked: (file: File) => void;
   onShowLog: () => void;
   onShowSettings: () => void;
@@ -193,6 +228,9 @@ function ScanScreen(props: {
           if (file) props.onPhotoPicked(file);
         }}
       />
+      {props.needsBoard && (
+        <p className="note">Board not connected. Open Settings and tap Connect board.</p>
+      )}
       {props.error && <p className="error">{props.error}</p>}
       <div className="row">
         <button className="plain-button" onClick={props.onShowLog}>
@@ -210,6 +248,7 @@ function ResultScreen(props: {
   result: ResultState;
   boardReply: BoardReply | null;
   boardStatus: Record<string, unknown> | null;
+  boardTitle: string;
   onSendAgain: () => void;
   onScanAnother: () => void;
 }) {
@@ -247,7 +286,9 @@ function ResultScreen(props: {
         </div>
       )}
 
-      <PretendBoardPanel
+      <BoardPanel
+        title={props.boardTitle}
+        error={result.boardError}
         status={props.boardStatus}
         reply={props.boardReply}
         onSendAgain={props.onSendAgain}
@@ -260,7 +301,9 @@ function ResultScreen(props: {
   );
 }
 
-function PretendBoardPanel(props: {
+function BoardPanel(props: {
+  title: string;
+  error: string | null;
   status: Record<string, unknown> | null;
   reply: BoardReply | null;
   onSendAgain: () => void;
@@ -270,7 +313,7 @@ function PretendBoardPanel(props: {
     position === 'healthy' ? 'led-green' : position === 'junk' ? 'led-red' : 'led-off';
   return (
     <div className="card">
-      <h2>Pretend board</h2>
+      <h2>{props.title}</h2>
       <div className="board">
         <div className="bins">
           <div className="bin bin-healthy">Healthy</div>
@@ -279,6 +322,7 @@ function PretendBoardPanel(props: {
         </div>
         <div className={`led ${led}`} title="LED" />
       </div>
+      {props.error && <p className="error">{props.error}</p>}
       {props.reply && (
         <>
           <h3>Board reply ({props.reply.status})</h3>
@@ -326,12 +370,31 @@ function LogScreen(props: { log: LogEntry[]; onBack: () => void }) {
 
 function SettingsScreen(props: {
   settings: Settings;
+  ble: BleBoard;
   onSave: (next: Settings) => void;
   onClearLog: () => void;
   onBack: () => void;
 }) {
   const [address, setAddress] = useState(props.settings.boardAddress);
   const [threshold, setThreshold] = useState(String(props.settings.threshold));
+  const [mode, setMode] = useState<Settings['boardMode']>(props.settings.boardMode);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const supported = bluetoothSupported();
+
+  async function connectBoard() {
+    setLinkError(null);
+    setConnecting(true);
+    try {
+      await props.ble.connect();
+    } catch (err) {
+      const e = err as Error;
+      // Closing the browser's device chooser is not an error worth shouting about.
+      setLinkError(e.name === 'NotFoundError' ? 'No board was chosen.' : e.message);
+    } finally {
+      setConnecting(false);
+    }
+  }
 
   function save() {
     const clean = cleanAddress(address);
@@ -339,7 +402,7 @@ function SettingsScreen(props: {
     props.onSave({
       boardAddress: clean || props.settings.boardAddress,
       threshold: Number.isInteger(n) && n >= 0 && n <= 10 ? n : props.settings.threshold,
-      boardMode: 'pretend',
+      boardMode: mode,
     });
     setAddress(clean || props.settings.boardAddress);
     props.onBack();
@@ -348,6 +411,8 @@ function SettingsScreen(props: {
   return (
     <section className="screen">
       <h2>Settings</h2>
+      {mode === 'pretend' && (
+        <>
       <label className="field">
         <span>Board address</span>
         <input
@@ -364,6 +429,8 @@ function SettingsScreen(props: {
         your phone's hotspot settings under connected devices, or count the green LED blinks
         for the last number.
       </p>
+        </>
+      )}
       <label className="field">
         <span>Healthy threshold (0–10)</span>
         <input
@@ -377,12 +444,49 @@ function SettingsScreen(props: {
       <fieldset className="field">
         <legend>Board mode</legend>
         <label className="radio">
-          <input type="radio" name="board-mode" checked readOnly /> Pretend
+          <input
+            type="radio"
+            name="board-mode"
+            checked={mode === 'pretend'}
+            onChange={() => setMode('pretend')}
+          />{' '}
+          Pretend (on screen)
         </label>
-        <label className="radio radio-disabled">
-          <input type="radio" name="board-mode" disabled /> Real (Phase 2)
+        <label className={`radio ${supported ? '' : 'radio-disabled'}`}>
+          <input
+            type="radio"
+            name="board-mode"
+            disabled={!supported}
+            checked={mode === 'real'}
+            onChange={() => setMode('real')}
+          />{' '}
+          Real board (Bluetooth)
         </label>
       </fieldset>
+      {!supported && (
+        <p className="note">
+          This browser cannot do Bluetooth. Use Chrome on an Android phone to talk to the real
+          board.
+        </p>
+      )}
+      {supported && mode === 'real' && (
+        <div className="card connect-card">
+          <p className="big-text">
+            {props.ble.connected
+              ? `Connected to ${props.ble.deviceName}`
+              : 'Board not connected'}
+          </p>
+          <button className="big-button" disabled={connecting} onClick={connectBoard}>
+            {connecting ? 'Connecting…' : props.ble.connected ? 'Connect again' : 'Connect board'}
+          </button>
+          {linkError && <p className="error">{linkError}</p>}
+          <p className="note">
+            Switch the board on, keep Bluetooth on, then tap Connect board and choose
+            food-sorter. On Android, Chrome also needs Location turned on for Bluetooth
+            scanning. Remember to tap Save.
+          </p>
+        </div>
+      )}
       <div className="row">
         <button className="plain-button" onClick={props.onClearLog}>
           Clear log
