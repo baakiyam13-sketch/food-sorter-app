@@ -1,8 +1,17 @@
 # Food Sorter phone app
 
-Phone web app for Ethan's food sorter school project (age 8). Take a photo of a food item, an AI gives it a health score from 0 to 10, and the app shows a big 😀 for healthy or 😞 for junk, then tells the ESP8266 sorter board which bin to push it into.
+Phone web app for Ethan's food sorter school project (age 8). Take a photo of a food item, an AI gives it a health score from 0 to 10, and the app shows a big 😀 for healthy or 😞 for junk, then tells the ESP32 sorter board which bin to push it into.
 
-This branch is **Phase 1**: a pretend board on screen stands in for the real one. Real board calls come in Phase 2.
+**Phase 1** is a pretend board on screen. **Phase 2** (this branch) adds the real ESP32 board over **Bluetooth Low Energy**, so the phone only needs the internet for the AI call and needs no Wi-Fi link, IP address or `.local` name for the board. The firmware is in the `microcontroller-projects` repository, folder `esp32/food-sorter`, which also documents the command protocol.
+
+## Using the real board
+
+1. Flash the ESP32 with `esp32/food-sorter` and power it on.
+2. Open the deployed app in **Chrome on an Android phone** (Web Bluetooth needs Chrome and HTTPS; iPhones are not supported). Keep Bluetooth on, and Location on for Android's Bluetooth scan.
+3. Settings, Board mode, **Real board (Bluetooth)**, tap **Connect board**, choose `food-sorter`, then **Save**.
+4. Scan as usual. If the link drops, the app reconnects to the same board by itself before the next scan, or tap Connect board again.
+
+The UUIDs in `src/ble.ts` must match `esp32/food-sorter/src/config.h`.
 
 ## Stack
 

@@ -316,3 +316,9 @@ body {
 .radio-disabled {
   color: #90a4ae;
 }
+
+.connect-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

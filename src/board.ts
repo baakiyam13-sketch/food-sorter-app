@@ -1,9 +1,9 @@
-// The board client. The app only ever talks to a BoardClient, so the real
-// HTTP board can drop in during Phase 2 without touching the screens.
+// The board client. The app only ever talks to a BoardClient, so the pretend
+// board (here) and the real Bluetooth board (ble.ts) are interchangeable.
 //
-// Every method returns the HTTP-ish reply the real board would give:
-// { status, body }. That keeps the pretend board honest: it follows the
-// board's HTTP contract exactly, including the 400/409 error replies.
+// Every method returns an HTTP-ish reply: { status, body }. The pretend board
+// follows the board's contract exactly, including the 400/409 error replies,
+// and the Bluetooth board turns the ESP32's short text replies into the same shape.
 
 import type { Side } from './decide';
 
@@ -34,7 +34,7 @@ export interface PretendBoardOptions {
   busyMs?: number; // tests can make this short
 }
 
-// A pretend board that stands in for the real ESP8266 in Phase 1.
+// A pretend board that stands in for the real ESP32 when no board is connected.
 // It keeps the same state the firmware does: busy, position, last, and
 // which LED would be on.
 export class PretendBoard implements BoardClient {
@@ -101,20 +101,6 @@ export class PretendBoard implements BoardClient {
       this.busyUntil = 0;
       this.last = side;
     }, this.busyMs);
-  }
-}
-
-// Phase 2 stub. It must never make network calls yet.
-export class HttpBoard implements BoardClient {
-  constructor(public readonly address: string) {}
-  async status(): Promise<BoardReply> {
-    throw new Error('Coming in Phase 2');
-  }
-  async sort(_side: string, _score: number): Promise<BoardReply> {
-    throw new Error('Coming in Phase 2');
-  }
-  async center(): Promise<BoardReply> {
-    throw new Error('Coming in Phase 2');
   }
 }
 
